@@ -1,0 +1,32 @@
+name: Site Mirror
+
+on:
+  workflow_dispatch:
+    inputs:
+      site_url:
+        description: 'URL to mirror'
+        required: true
+        default: 'https://example.com'
+  schedule:
+    - cron: '0 0 * * 0'
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 lxml
+      - name: Run scraper
+        env:
+          SITE_URL: ${{ github.event.inputs.site_url || 'https://example.com' }}
+        run: python scrape.py
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: site-mirror
+          path: site_mirror.zip

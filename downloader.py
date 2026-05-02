@@ -1,202 +1,208 @@
-import os, sys, json, subprocess, re, zipfile, shutil, time
+import os, sys, subprocess as sp, re, zipfile, shutil, time as t, requests as rq
 from urllib.parse import urljoin, urlparse
-import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup as BS
 
-def log(msg):
-    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+def l(msg):
+    print(f"[{t.strftime('%H:%M:%S')}] {msg}", flush=True)
 
-def run(cmd, cwd=None):
-    log(f"Running: {' '.join(cmd)}")
-    subprocess.run(cmd, check=True, cwd=cwd)
+def r(c, d=None):
+    l(f"run: {' '.join(c)}")
+    sp.run(c, check=True, cwd=d)
 
-def download_direct(url, filename, headers=None):
-    local = filename or os.path.basename(urlparse(url).path) or 'downloaded_file'
-    log(f"Downloading {url} -> {local}")
-    sess = requests.Session()
-    sess.headers.update(headers or {})
-    sess.headers.setdefault('User-Agent', 'Mozilla/5.0')
-    r = sess.get(url, stream=True, timeout=30)
-    r.raise_for_status()
-    total = int(r.headers.get('content-length', 0))
-    downloaded = 0
-    with open(local, 'wb') as f:
-        for chunk in r.iter_content(chunk_size=8192):
-            if chunk:
-                f.write(chunk)
-                downloaded += len(chunk)
+def d(url, fn=None, hdrs=None):
+    f = fn or os.path.basename(urlparse(url).path) or 'f'
+    l(f"dl {url} -> {f}")
+    s = rq.Session()
+    s.headers.update(hdrs or {})
+    s.headers.setdefault('User-Agent', 'Mozilla/5.0')
+    rs = s.get(url, stream=True, timeout=30)
+    rs.raise_for_status()
+    total = int(rs.headers.get('content-length', 0))
+    done = 0
+    with open(f, 'wb') as fh:
+        for ck in rs.iter_content(chunk_size=8192):
+            if ck:
+                fh.write(ck)
+                done += len(ck)
                 if total:
-                    pct = downloaded * 100 // total
-                    log(f"  {pct}% ({downloaded}/{total} bytes)")
-    log(f"Downloaded {downloaded} bytes to {local}")
-    return local
+                    pct = done * 100 // total
+                    l(f"  {pct}% ({done}/{total})")
+    l(f"done {done} -> {f}")
+    return f
 
-def git_clone(repo, branch=None, dest=None, depth=1, lfs=True):
-    dest = dest or os.path.basename(repo.rstrip('/').split('/')[-1].replace('.git', ''))
+def g(repo, branch=None, dest=None, depth=1, lfs=True):
+    d_ = dest or os.path.basename(repo.rstrip('/').split('/')[-1].replace('.git', ''))
     cmd = ['git', 'clone']
     if depth:
         cmd += ['--depth', str(depth)]
     if branch:
         cmd += ['--branch', branch, '--single-branch']
-    cmd += [repo, dest]
-    run(cmd)
+    cmd += [repo, d_]
+    r(cmd)
     if lfs:
         try:
-            run(['git', 'lfs', 'pull'], cwd=dest)
+            r(['git', 'lfs', 'pull'], cwd=d_)
         except:
-            log("git lfs not available, skipping LFS pull")
-    log(f"Cloned {repo} into {dest}")
-    return dest
+            l("lfs skip")
+    l(f"cloned {repo} -> {d_}")
+    return d_
 
-def mirror_website(start_url, output_dir='site_mirror', max_depth=1000):
-    log(f"Mirroring website: {start_url}")
-    session = requests.Session()
-    session.headers.update({'User-Agent': 'Mozilla/5.0 (compatible; SiteMirror/1.0)'})
-    domain = urlparse(start_url).netloc
-    visited = set()
-    queue = [(start_url, 0)]
-    os.makedirs(output_dir, exist_ok=True)
-    css_url_pattern = re.compile(r'url\([\'"]?([^\'")\s]+)[\'"]?\)')
+def m(url, out='site_mirror', depth=1000):
+    l(f"mirror {url}")
+    sess = rq.Session()
+    sess.headers.update({'User-Agent': 'Mozilla/5.0'})
+    dom = urlparse(url).netloc
+    vis = set()
+    q = [(url, 0)]
+    os.makedirs(out, exist_ok=True)
+    css_re = re.compile(r'url\([\'"]?([^\'")\s]+)[\'"]?\)')
 
-    def local_path(url):
-        parsed = urlparse(url)
-        path = parsed.path.lstrip('/')
-        if not path or path.endswith('/'):
-            path += 'index.html'
-        return os.path.join(output_dir, domain, path)
+    def lp(u):
+        p = urlparse(u).path.lstrip('/')
+        if not p or p.endswith('/'):
+            p += 'index.html'
+        return os.path.join(out, dom, p)
 
-    def download_file(url):
-        if url in visited:
+    def dl(u):
+        if u in vis:
             return None
-        visited.add(url)
+        vis.add(u)
         try:
-            resp = session.get(url, timeout=10)
-            if resp.status_code != 200:
+            rs = sess.get(u, timeout=10)
+            if rs.status_code != 200:
                 return None
-            path = local_path(url)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'wb') as f:
-                f.write(resp.content)
-            log(f"  Downloaded: {url}")
-            return path, resp
+            ph = lp(u)
+            os.makedirs(os.path.dirname(ph), exist_ok=True)
+            with open(ph, 'wb') as f:
+                f.write(rs.content)
+            l(f"  got {u}")
+            return ph, rs
         except Exception as e:
-            log(f"  Failed: {url} - {e}")
+            l(f"  fail {u}: {e}")
             return None
 
-    def rewrite_asset_url(url, base_url):
-        if not url or url.startswith('data:'):
-            return url
-        if urlparse(url).netloc and urlparse(url).netloc != domain:
-            return url
-        abs_url = urljoin(base_url, url)
-        dl = download_file(abs_url)
-        return '/' + urlparse(abs_url).path.lstrip('/')
+    def rw(u, base):
+        if not u or u.startswith('data:'):
+            return u
+        if urlparse(u).netloc and urlparse(u).netloc != dom:
+            return u
+        ab = urljoin(base, u)
+        dl(ab)
+        return '/' + urlparse(ab).path.lstrip('/')
 
-    while queue:
-        url, depth = queue.pop(0)
-        if depth > max_depth or url in visited:
+    while q:
+        u, d_ = q.pop(0)
+        if d_ > depth or u in vis:
             continue
-        dl = download_file(url)
-        if not dl:
+        res = dl(u)
+        if not res:
             continue
-        path, resp = dl
-        if 'text/html' not in resp.headers.get('content-type', ''):
+        ph, rs = res
+        if 'text/html' not in rs.headers.get('content-type', ''):
             continue
-        soup = BeautifulSoup(resp.content, 'lxml')
-        base_url = resp.url
-        for tag in soup.find_all(['a','link','script','img','source']):
-            if tag.name == 'a' and tag.has_attr('href'):
-                href = tag['href']
-                if not urlparse(href).netloc or urlparse(href).netloc == domain:
-                    abs_href = urljoin(base_url, href)
-                    if urlparse(abs_href).netloc == domain and abs_href not in visited:
-                        queue.append((abs_href, depth+1))
-                        tag['href'] = '/' + urlparse(abs_href).path.lstrip('/')
-            elif tag.name == 'link' and tag.has_attr('href'):
-                tag['href'] = rewrite_asset_url(tag['href'], base_url)
-            elif tag.name == 'script' and tag.has_attr('src'):
-                tag['src'] = rewrite_asset_url(tag['src'], base_url)
-            elif tag.name == 'img' and tag.has_attr('src'):
-                tag['src'] = rewrite_asset_url(tag['src'], base_url)
-            elif tag.name == 'source' and tag.has_attr('srcset'):
-                srcset = tag['srcset']
-                parts = []
-                for part in srcset.split(','):
-                    part = part.strip()
-                    if part:
-                        url_part = part.split(' ')[0]
-                        new_url = rewrite_asset_url(url_part, base_url)
-                        parts.append(part.replace(url_part, new_url, 1))
-                tag['srcset'] = ', '.join(parts)
-        with open(path, 'wb') as f:
-            f.write(soup.prettify('utf-8'))
-        for css_tag in soup.find_all('link', rel='stylesheet'):
-            css_href = css_tag.get('href')
-            if css_href:
-                css_abs = urljoin(base_url, css_href) if (not urlparse(css_href).netloc or urlparse(css_href).netloc == domain) else None
-                if css_abs and urlparse(css_abs).netloc == domain:
-                    css_path = local_path(css_abs)
-                    if os.path.exists(css_path):
-                        with open(css_path, 'r', encoding='utf-8') as f:
-                            css_content = f.read()
-                        def replace_url(m):
-                            u = m.group(1)
-                            return f"url({rewrite_asset_url(u, css_abs)})"
-                        new_css = css_url_pattern.sub(replace_url, css_content)
-                        with open(css_path, 'w', encoding='utf-8') as f:
-                            f.write(new_css)
-    log("Website mirror completed")
+        sps = BS(rs.content, 'lxml')
+        base = rs.url
+        for tag in sps.find_all(['a','link','script','img','source']):
+            try:
+                if tag.name == 'a' and tag.has_attr('href'):
+                    href = tag['href']
+                    if not urlparse(href).netloc or urlparse(href).netloc == dom:
+                        ah = urljoin(base, href)
+                        if urlparse(ah).netloc == dom and ah not in vis:
+                            q.append((ah, d_+1))
+                            tag['href'] = '/' + urlparse(ah).path.lstrip('/')
+                elif tag.name == 'link' and tag.has_attr('href'):
+                    tag['href'] = rw(tag['href'], base)
+                elif tag.name == 'script' and tag.has_attr('src'):
+                    tag['src'] = rw(tag['src'], base)
+                elif tag.name == 'img' and tag.has_attr('src'):
+                    tag['src'] = rw(tag['src'], base)
+                elif tag.name == 'source' and tag.has_attr('srcset'):
+                    srcset = tag['srcset']
+                    pts = []
+                    for pt in srcset.split(','):
+                        pt = pt.strip()
+                        if pt:
+                            up = pt.split(' ')[0]
+                            nw = rw(up, base)
+                            pts.append(pt.replace(up, nw, 1))
+                    tag['srcset'] = ', '.join(pts)
+            except:
+                pass
+        with open(ph, 'wb') as f:
+            f.write(sps.prettify('utf-8'))
+        for ct in sps.find_all('link', rel='stylesheet'):
+            ch = ct.get('href')
+            if ch:
+                ca = urljoin(base, ch) if (not urlparse(ch).netloc or urlparse(ch).netloc == dom) else None
+                if ca and urlparse(ca).netloc == dom:
+                    cp = lp(ca)
+                    if os.path.exists(cp):
+                        with open(cp, 'r', encoding='utf-8') as f:
+                            cssc = f.read()
+                        def rpl(m):
+                            u_ = m.group(1)
+                            return f"url({rw(u_, ca)})"
+                        ncss = css_re.sub(rpl, cssc)
+                        with open(cp, 'w', encoding='utf-8') as f:
+                            f.write(ncss)
+    l("mirror done")
 
 def main():
-    tasks_json = os.environ.get('TASKS_JSON', '[]')
-    try:
-        tasks = json.loads(tasks_json)
-    except Exception as e:
-        log(f"Invalid TASKS_JSON: {e}")
-        sys.exit(1)
-    if not tasks:
-        log("No tasks defined in TASKS_JSON")
-        sys.exit(0)
-    out_root = os.environ.get('OUTPUT_DIR', 'downloads')
+    raw = os.environ.get('CMDS', '')
+    lines = [ln.strip() for ln in raw.split('\n') if ln.strip() and not ln.strip().startswith('#')]
+    if not lines:
+        l("no cmds")
+        return
+    out_root = os.environ.get('OUT_DIR', 'dl')
     os.makedirs(out_root, exist_ok=True)
-    for i, task in enumerate(tasks):
-        log(f"Task {i+1}/{len(tasks)}: {task.get('type')}")
-        t = task.get('type')
+    for ln in lines:
+        parts = ln.split()
+        if not parts:
+            continue
+        cmd = parts[0].lower()
+        url = parts[1] if len(parts) > 1 else ''
+        kwargs = {}
+        for p in parts[2:]:
+            if '=' in p:
+                k, v = p.split('=', 1)
+                kwargs[k] = v
         try:
-            if t == 'direct':
-                url = task['url']
-                filename = task.get('filename')
-                headers = task.get('headers')
-                dest_path = os.path.join(out_root, filename or os.path.basename(urlparse(url).path) or 'file')
-                download_direct(url, dest_path, headers)
-            elif t == 'git':
-                repo = task['repo']
-                branch = task.get('branch')
-                depth = task.get('depth', 1)
-                lfs = task.get('lfs', True)
-                dest = task.get('dest')
+            if cmd == 'wget':
+                fn = kwargs.get('o', kwargs.get('output', None))
+                if fn:
+                    fn = os.path.join(out_root, fn)
+                else:
+                    fn = os.path.join(out_root, os.path.basename(urlparse(url).path) or 'f')
+                d(url, fn)
+            elif cmd == 'git':
+                repo = url
+                branch = kwargs.get('b', kwargs.get('branch'))
+                depth = int(kwargs.get('depth', '1'))
+                lfs = kwargs.get('lfs', 'true').lower() in ('1', 'true', 'yes')
+                dest = kwargs.get('d', kwargs.get('dest'))
                 if dest:
                     dest = os.path.join(out_root, dest)
                 else:
                     dest = os.path.join(out_root, os.path.basename(repo.rstrip('/').split('/')[-1].replace('.git', '')))
-                git_clone(repo, branch=branch, dest=dest, depth=depth, lfs=lfs)
-            elif t == 'website':
-                url = task['url']
-                site_dir = os.path.join(out_root, task.get('output_dir', 'site_mirror'))
-                mirror_website(url, output_dir=site_dir)
+                g(repo, branch=branch, dest=dest, depth=depth, lfs=lfs)
+            elif cmd == 'mirror':
+                site_dir = os.path.join(out_root, kwargs.get('o', kwargs.get('out', 'mirror')))
+                md = int(kwargs.get('depth', '1000'))
+                m(url, out=site_dir, depth=md)
             else:
-                log(f"Unknown task type: {t}")
+                l(f"unknown cmd: {cmd}")
         except Exception as e:
-            log(f"Task failed: {e}")
-    log("All tasks completed. Creating final ZIP...")
-    zip_name = os.environ.get('ZIP_NAME', 'final_download.zip')
-    with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for root, dirs, files in os.walk(out_root):
-            for file in files:
-                full = os.path.join(root, file)
-                arcname = os.path.relpath(full, out_root)
-                zf.write(full, arcname)
-    log(f"ZIP created: {zip_name}")
+            l(f"fail: {e}")
+    l("zip...")
+    zip_n = os.environ.get('ZIP', 'out.zip')
+    with zipfile.ZipFile(zip_n, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for rt, _, fs in os.walk(out_root):
+            for fn in fs:
+                fl = os.path.join(rt, fn)
+                arc = os.path.relpath(fl, out_root)
+                zf.write(fl, arc)
+    l(f"zip: {zip_n}")
 
 if __name__ == '__main__':
     main()

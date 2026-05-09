@@ -1,0 +1,141 @@
+name: 🗑️ git-get Cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      cleanup_type:
+        description: '🧹 What to clean'
+        required: true
+        type: choice
+        options:
+          - delete_results
+          - delete_downloads
+          - delete_videos
+          - delete_music
+          - delete_all
+          - delete_all_keep_readme
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+      - name: Cleanup Repository
+        env:
+          CLEANUP_TYPE: ${{ github.event.inputs.cleanup_type }}
+        run: |
+          echo "🗑️ git-get Cleanup Started"
+          echo "Cleanup type: $CLEANUP_TYPE"
+          
+          case "$CLEANUP_TYPE" in
+            "delete_results")
+              echo "🗑️ Deleting search results..."
+              rm -rf results/
+              echo "✅ Search results deleted"
+              ;;
+              
+            "delete_downloads")
+              echo "🗑️ Deleting downloads..."
+              rm -rf downloads/
+              echo "✅ Downloads deleted"
+              ;;
+              
+            "delete_videos")
+              echo "🗑️ Deleting video files..."
+              find downloads/ videos/ -name "*.mp4" -delete 2>/dev/null || true
+              find downloads/ videos/ -name "*.mkv" -delete 2>/dev/null || true
+              find downloads/ videos/ -name "*.webm" -delete 2>/dev/null || true
+              find downloads/ videos/ -name "*.avi" -delete 2>/dev/null || true
+              find downloads/ videos/ -name "*.mov" -delete 2>/dev/null || true
+              echo "✅ Video files deleted"
+              ;;
+              
+            "delete_music")
+              echo "🗑️ Deleting music files..."
+              find downloads/ videos/ -name "*.mp3" -delete 2>/dev/null || true
+              find downloads/ videos/ -name "*.m4a" -delete 2>/dev/null || true
+              find downloads/ videos/ -name "*.opus" -delete 2>/dev/null || true
+              find downloads/ videos/ -name "*.ogg" -delete 2>/dev/null || true
+              find downloads/ videos/ -name "*.flac" -delete 2>/dev/null || true
+              find downloads/ videos/ -name "*.aac" -delete 2>/dev/null || true
+              echo "✅ Music files deleted"
+              ;;
+              
+            "delete_all")
+              echo "🗑️ Deleting everything..."
+              rm -rf downloads/ results/ videos/ tmp_downloads/ 2>/dev/null || true
+              echo "✅ Everything deleted"
+              ;;
+              
+            "delete_all_keep_readme")
+              echo "🗑️ Deleting everything except README..."
+              find . -maxdepth 1 -type f ! -name "README.md" ! -name ".git*" ! -name "*.yml" ! -name "*.yaml" -delete 2>/dev/null || true
+              rm -rf downloads/ results/ videos/ tmp_downloads/ 2>/dev/null || true
+              echo "✅ Everything deleted (README kept)"
+              ;;
+          esac
+          
+          # Remove empty directories
+          find . -type d -empty -delete 2>/dev/null || true
+
+      - name: Commit & Push Changes
+        run: |
+          git add -A
+          
+          if ! git diff --cached --quiet 2>/dev/null; then
+            case "${{ github.event.inputs.cleanup_type }}" in
+              "delete_results")
+                git commit -m "🗑️ Cleanup: Search results deleted"
+                ;;
+              "delete_downloads")
+                git commit -m "🗑️ Cleanup: Downloads deleted"
+                ;;
+              "delete_videos")
+                git commit -m "🗑️ Cleanup: Video files deleted"
+                ;;
+              "delete_music")
+                git commit -m "🗑️ Cleanup: Music files deleted"
+                ;;
+              "delete_all")
+                git commit -m "🗑️ Cleanup: Repository cleaned"
+                ;;
+              "delete_all_keep_readme")
+                git commit -m "🗑️ Cleanup: Repository cleaned (README kept)"
+                ;;
+            esac
+            
+            for i in {1..3}; do
+              if timeout 120 git push origin HEAD:"${GITHUB_REF_NAME}"; then
+                echo "✅ Cleanup completed and pushed!"
+                break
+              else
+                echo "❌ Push failed, retry $i/3..."
+                sleep 5
+              fi
+            done
+          else
+            echo "ℹ️ Nothing to cleanup"
+          fi
+
+      - name: Summary
+        run: |
+          echo ""
+          echo "🎉 git-get Cleanup Summary:"
+          echo "✅ Cleanup type: ${{ github.event.inputs.cleanup_type }}"
+          echo "✅ Repository cleaned successfully"
+          echo ""
+          ls -la . 2>/dev/null || true

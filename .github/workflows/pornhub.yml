@@ -1,15 +1,8 @@
-name: pornhub
+name: git-get-pornhub
 
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: 'Mode'
-        required: true
-        type: choice
-        options:
-          - download
-          - search
       input:
         description: 'URL or Search Term'
         required: true
@@ -19,10 +12,8 @@ permissions:
   contents: write
 
 jobs:
-  run:
+  pornhub:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,32 +21,38 @@ jobs:
 
       - name: Setup
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y python3-pip p7zip-full
-          pip3 install --quiet yt-dlp
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-pip rar bc
+          pip3 install yt-dlp
 
       - name: Process
+        env:
+          INPUT: ${{ inputs.input }}
         run: |
-          mkdir -p downloads/pornhub
-          cd downloads/pornhub
-
-          if [[ "${{ github.event.inputs.mode }}" == "download" ]]; then
-            yt-dlp --format "best[height<=720]" -o "%(title)s [%(id)s].%(ext)s" "${{ github.event.inputs.input }}"
+          mkdir -p pornhub
+          if [[ "$INPUT" =~ ^https?:// ]]; then
+            yt-dlp --no-check-certificate \
+              --format "bestvideo[height<=1080]+bestaudio/best[ext=mp4]/best" \
+              --merge-output-format mp4 \
+              --output "pornhub/%(uploader)s - %(title)s - %(id)s.%(ext)s" \
+              "$INPUT"
           else
-            yt-dlp --flat-playlist --dump-json "pornhubsearch10:${{ github.event.inputs.input }}" 2>/dev/null | jq -r '
-              "# Pornhub Search: ${{ github.event.inputs.input }}\n",
-              "| # | Title | Duration | Views | URL |",
-              "|---|-------|----------|-------|-----|",
-              (.[0:25] | .[] | "| \(.index // 0) | \(.title) | \(.duration_string // \"-\") | \(.view_count // 0) | [Link](\(.url)) |")
-            ' > "search_${{ github.event.inputs.input | replace(" ", "_") }}.md"
+            yt-dlp --flat-playlist -j "pornhubsearch:$INPUT" | while read -r line; do
+              url=$(echo "$line" | jq -r '.webpage_url // .url')
+              yt-dlp --no-check-certificate \
+                --format "bestvideo[height<=1080]+bestaudio/best[ext=mp4]/best" \
+                --merge-output-format mp4 \
+                --output "pornhub/%(uploader)s - %(title)s - %(id)s.%(ext)s" \
+                "$url"
+            done
           fi
 
-      - name: Split
+      - name: Split > 95MB
         run: |
-          cd downloads/pornhub
-          for f in *; do
-            [ -f "$f" ] || continue
-            if [ $(stat -c%s "$f") -gt $((95*1024*1024)) ]; then
-              7z a -v95m -mx=1 "${f%.*}.7z" "$f" && rm "$f"
+          cd pornhub
+          find . -name "*.mp4" | while read f; do
+            if [ $(stat -c%s "$f") -gt 99614720 ]; then
+              rar a -v90m -m5 -ep1 "${f%.*}.rar" "$f" && rm "$f"
             fi
           done
 
@@ -63,6 +60,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/pornhub/
-          git commit -m "Pornhub: ${{ github.event.inputs.mode }} completed" || echo "No changes"
+          git add pornhub/
+          git commit -m "git-get: pornhub" || echo "No changes"
           git push

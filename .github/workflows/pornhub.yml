@@ -1,0 +1,68 @@
+name: pornhub
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Mode'
+        required: true
+        type: choice
+        options:
+          - download
+          - search
+      input:
+        description: 'URL or Search Term'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y python3-pip p7zip-full
+          pip3 install --quiet yt-dlp
+
+      - name: Process
+        run: |
+          mkdir -p downloads/pornhub
+          cd downloads/pornhub
+
+          if [[ "${{ github.event.inputs.mode }}" == "download" ]]; then
+            yt-dlp --format "best[height<=720]" -o "%(title)s [%(id)s].%(ext)s" "${{ github.event.inputs.input }}"
+          else
+            yt-dlp --flat-playlist --dump-json "pornhubsearch10:${{ github.event.inputs.input }}" 2>/dev/null | jq -r '
+              "# Pornhub Search: ${{ github.event.inputs.input }}\n",
+              "| # | Title | Duration | Views | URL |",
+              "|---|-------|----------|-------|-----|",
+              (.[0:25] | .[] | "| \(.index // 0) | \(.title) | \(.duration_string // \"-\") | \(.view_count // 0) | [Link](\(.url)) |")
+            ' > "search_${{ github.event.inputs.input | replace(" ", "_") }}.md"
+          fi
+
+      - name: Split
+        run: |
+          cd downloads/pornhub
+          for f in *; do
+            [ -f "$f" ] || continue
+            if [ $(stat -c%s "$f") -gt $((95*1024*1024)) ]; then
+              7z a -v95m -mx=1 "${f%.*}.7z" "$f" && rm "$f"
+            fi
+          done
+
+      - name: Commit & Push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add downloads/pornhub/
+          git commit -m "Pornhub: ${{ github.event.inputs.mode }} completed" || echo "No changes"
+          git push

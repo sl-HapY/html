@@ -29,8 +29,15 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Sanitize Query
+        id: sanitize
+        run: |
+          SAFE=$(echo "${{ github.event.inputs.query }}" | sed 's/[^a-zA-Z0-9ا-ی۰-۹ _-]/_/g' | sed 's/ /_/g' | sed 's/__*/_/g' | cut -c1-50)
+          echo "safe=$SAFE" >> $GITHUB_OUTPUT
+
       - name: Setup
         run: |
+          sudo apt-get update -qq
           sudo apt-get install -y python3-pip jq
           pip3 install --quiet yt-dlp
 
@@ -41,24 +48,36 @@ jobs:
 
           case "${{ github.event.inputs.platform }}" in
             "youtube")
-              yt-dlp --flat-playlist --dump-json "ytsearch30:${{ github.event.inputs.query }}" > results.jsonl
-              jq -r '"# YouTube Search: ${{ github.event.inputs.query }}\n\n| # | Title | Duration | Channel | URL |\n|---|---|---|---|---|", 
-              (.[0:25] | .[] | "| \(.index // 0) | \(.title) | \(.duration_string // \"-\") | \(.uploader // \"-\") | [Watch](https://youtube.com/watch?v=\(.id)) |")' results.jsonl > "youtube_${{ github.event.inputs.query | replace(" ", "_") }}.md"
+              yt-dlp --flat-playlist --dump-single-json "ytsearch30:${{ github.event.inputs.query }}" | jq -r '
+                "# YouTube Search: ${{ github.event.inputs.query }}\n",
+                "| # | Title | Duration | Channel | URL |",
+                "|---|-------|----------|---------|-----|",
+                (.[0:25] | .[] | "| \(.[\"index\"] // 0) | \(.[\"title\"] // \"N/A\") | \(.[\"duration_string\"] // \"-\") | \(.[\"uploader\"] // \"-\") | [Watch](https://youtube.com/watch?v=\(.[\"id\"])) |")
+              ' > "youtube_${{ steps.sanitize.outputs.safe }}.md"
               ;;
             "youtube_music")
-              yt-dlp --flat-playlist --dump-json "ytsearch30:${{ github.event.inputs.query }} music" > results.jsonl
-              jq -r '"# YouTube Music Search: ${{ github.event.inputs.query }}\n\n| # | Title | Duration | Channel | URL |\n|---|---|---|---|---|", 
-              (.[0:25] | .[] | "| \(.index // 0) | \(.title) | \(.duration_string // \"-\") | \(.uploader // \"-\") | [Listen](https://youtube.com/watch?v=\(.id)) |")' results.jsonl > "music_${{ github.event.inputs.query | replace(" ", "_") }}.md"
+              yt-dlp --flat-playlist --dump-single-json "ytsearch30:${{ github.event.inputs.query }} official audio" | jq -r '
+                "# YouTube Music Search: ${{ github.event.inputs.query }}\n",
+                "| # | Title | Duration | Channel | URL |",
+                "|---|-------|----------|---------|-----|",
+                (.[0:25] | .[] | "| \(.[\"index\"] // 0) | \(.[\"title\"] // \"N/A\") | \(.[\"duration_string\"] // \"-\") | \(.[\"uploader\"] // \"-\") | [Listen](https://youtube.com/watch?v=\(.[\"id\"])) |")
+              ' > "music_${{ steps.sanitize.outputs.safe }}.md"
               ;;
             "soundcloud")
-              yt-dlp --flat-playlist --dump-json "soundcloudsearch15:${{ github.event.inputs.query }}" > results.jsonl
-              jq -r '"# SoundCloud Search: ${{ github.event.inputs.query }}\n\n| # | Title | Duration | User | URL |\n|---|---|---|---|---|", 
-              (.[0:20] | .[] | "| \(.index // 0) | \(.title) | \(.duration_string // \"-\") | \(.uploader // \"-\") | [Link](\(.url)) |")' results.jsonl > "soundcloud_${{ github.event.inputs.query | replace(" ", "_") }}.md"
+              yt-dlp --flat-playlist --dump-single-json "soundcloudsearch15:${{ github.event.inputs.query }}" | jq -r '
+                "# SoundCloud Search: ${{ github.event.inputs.query }}\n",
+                "| # | Title | Duration | User | URL |",
+                "|---|-------|----------|------|-----|",
+                (.[0:20] | .[] | "| \(.[\"index\"] // 0) | \(.[\"title\"] // \"N/A\") | \(.[\"duration_string\"] // \"-\") | \(.[\"uploader\"] // \"-\") | [Link](\(.[\"url\"])) |")
+              ' > "soundcloud_${{ steps.sanitize.outputs.safe }}.md"
               ;;
             "pornhub")
-              yt-dlp --flat-playlist --dump-json "pornhubsearch15:${{ github.event.inputs.query }}" > results.jsonl 2>/dev/null || true
-              jq -r '"# Pornhub Search: ${{ github.event.inputs.query }}\n\n| # | Title | Duration | URL |\n|---|---|---|---|", 
-              (.[0:20] | .[] | "| \(.index // 0) | \(.title) | \(.duration_string // \"-\") | [Link](\(.url)) |")' results.jsonl > "pornhub_${{ github.event.inputs.query | replace(" ", "_") }}.md"
+              yt-dlp --flat-playlist --dump-single-json "pornhubsearch:${{ github.event.inputs.query }}" 2>/dev/null | jq -r '
+                "# Pornhub Search: ${{ github.event.inputs.query }}\n",
+                "| # | Title | Duration | URL |",
+                "|---|-------|----------|-----|",
+                (.[0:20] | .[] | "| \(.[\"index\"] // 0) | \(.[\"title\"] // \"N/A\") | \(.[\"duration_string\"] // \"-\") | [Link](\(.[\"url\"])) |")
+              ' > "pornhub_${{ steps.sanitize.outputs.safe }}.md"
               ;;
           esac
 

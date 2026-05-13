@@ -1,379 +1,118 @@
-name: 🚀 git-get
+name: "git-get"
 
 on:
   workflow_dispatch:
     inputs:
       method:
-        description: '📁 Download Method'
+        description: "Search platform"
         required: true
         type: choice
         options:
-          - youtube_download
-          - youtube_playlist
-          - direct_download
           - youtube_search
           - youtube_music_search
-      quality:
-        description: '🎬 Video Quality (YouTube only)'
-        required: false
-        default: 'best'
-        type: choice
-        options:
-          - best
-          - 2160
-          - 1440
-          - 1080
-          - 720
-          - 480
-          - audio
-      input_text:
-        description: '🔗 Search Text / YouTube URL / Direct URL / Playlist URL'
+          - soundcloud_search
+      search_text:
+        description: "Search term"
         required: true
         type: string
 
-jobs:
-  git-get:
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    permissions:
-      contents: write
+permissions:
+  contents: write
 
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
 
-      - name: Configure Git
-        run: |
-          git config --global http.postBuffer 524288000
-          git config --global http.maxRequestBuffer 100M
-          git config --global core.compression 0
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-
-      - name: Start WARP Container
-        if: contains(github.event.inputs.method, 'youtube')
+      - if: contains(github.event.inputs.method, 'youtube')
         run: |
           docker network create warp-net || true
-          docker run -d \
-            --name warp \
-            --restart=always \
-            --network warp-net \
-            -p 1080:1080 \
-            --cap-add NET_ADMIN \
-            --sysctl net.ipv6.conf.all.disable_ipv6=0 \
-            --sysctl net.ipv4.conf.all.src_valid_mark=1 \
-            -v warp-data:/var/lib/cloudflare-warp \
+          docker run -d --name warp --restart=always --network warp-net -p 1080:1080 \
+            --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 \
+            --sysctl net.ipv4.conf.all.src_valid_mark=1 -v warp-data:/var/lib/cloudflare-warp \
             caomingjun/warp
           sleep 15
 
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-pip ffmpeg aria2 curl jq bc
-
-          if [[ "${{ github.event.inputs.method }}" =~ ^youtube ]]; then
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-pip curl jq
+          pip3 install --upgrade yt-dlp
+          if [[ "${{ github.event.inputs.method }}" == youtube* ]]; then
             curl -fsSL https://deno.land/install.sh | sh
-            export DENO_INSTALL="$HOME/.deno"
-            export PATH="$DENO_INSTALL/bin:$PATH"
-            echo "$DENO_INSTALL/bin" >> $GITHUB_PATH
-            pip3 install --upgrade yt-dlp
+            echo "$HOME/.deno/bin" >> $GITHUB_PATH
           fi
 
-      - name: Process Request
+      - shell: bash
         env:
           METHOD: ${{ github.event.inputs.method }}
-          QUALITY: ${{ github.event.inputs.quality }}
-          INPUT_TEXT: ${{ github.event.inputs.input_text }}
+          TEXT: ${{ github.event.inputs.search_text }}
         run: |
-          mkdir -p downloads results
-
+          SAFE=$(echo "$TEXT" | sed 's/[^a-zA-Z0-9 ]/_/g' | sed 's/ /_/g')
           case "$METHOD" in
-            "youtube_download")
-              echo "🎥 YouTube Download Mode"
-              
-              case "$QUALITY" in
-                "audio")
-                  FORMAT="bestaudio/bestaudio*"
-                  COMMON_FLAGS="--extract-audio --audio-format mp3 --audio-quality 0"
-                  ;;
-                "best")
-                  FORMAT="bestvideo+bestaudio/bestvideo*+bestaudio*/best"
-                  COMMON_FLAGS="--merge-output-format mp4"
-                  ;;
-                *)
-                  FORMAT="bestvideo[height<=${QUALITY}]+bestaudio/bestvideo[height<=${QUALITY}]*+bestaudio*"
-                  COMMON_FLAGS="--merge-output-format mp4"
-                  ;;
-              esac
-
-              for URL in $INPUT_TEXT; do
-                echo "📥 Starting download: $URL"
-                for METHOD_NUM in 1 2 3 4 5; do
-                  case $METHOD_NUM in
-                    1)
-                      echo "🔄 Attempt $METHOD_NUM/5 - Using web client with proxy"
-                      yt-dlp \
-                        --proxy "socks5://127.0.0.1:1080" \
-                        --format "$FORMAT" \
-                        $COMMON_FLAGS \
-                        --output "downloads/%(title)s.%(ext)s" \
-                        --extractor-args "youtube:player_client=web" \
-                        --js-runtimes deno \
-                        --remote-components ejs:github \
-                        --progress \
-                        "$URL" && break
-                      ;;
-                    2)
-                      echo "🔄 Attempt $METHOD_NUM/5 - Using mweb client"
-                      yt-dlp \
-                        --proxy "socks5://127.0.0.1:1080" \
-                        --format "$FORMAT" \
-                        $COMMON_FLAGS \
-                        --output "downloads/%(title)s.%(ext)s" \
-                        --extractor-args "youtube:player_client=mweb" \
-                        --progress \
-                        "$URL" && break
-                      ;;
-                    3)
-                      echo "🔄 Attempt $METHOD_NUM/5 - Using android_vr client"
-                      yt-dlp \
-                        --proxy "socks5://127.0.0.1:1080" \
-                        --format "$FORMAT" \
-                        $COMMON_FLAGS \
-                        --output "downloads/%(title)s.%(ext)s" \
-                        --extractor-args "youtube:player_client=android_vr" \
-                        --progress \
-                        "$URL" && break
-                      ;;
-                    4)
-                      echo "🔄 Attempt $METHOD_NUM/5 - Using mweb without proxy"
-                      yt-dlp \
-                        --format "$FORMAT" \
-                        $COMMON_FLAGS \
-                        --output "downloads/%(title)s.%(ext)s" \
-                        --extractor-args "youtube:player_client=mweb" \
-                        --progress \
-                        "$URL" && break
-                      ;;
-                    5)
-                      echo "🔄 Attempt $METHOD_NUM/5 - Using android client (last resort)"
-                      yt-dlp \
-                        --format "$FORMAT" \
-                        $COMMON_FLAGS \
-                        --output "downloads/%(title)s.%(ext)s" \
-                        --extractor-args "youtube:player_client=android" \
-                        --progress \
-                        "$URL" && break
-                      ;;
-                  esac
-                  echo "❌ Attempt $METHOD_NUM failed, waiting 5 seconds..."
-                  sleep 5
-                done
-                echo "✅ Download completed for: $URL"
-              done
+            youtube_search)
+              FOLDER="youtube_searches"
+              QUERY="ytsearch50:$TEXT"
+              CLIENT="web"
+              PROXY="--proxy socks5://127.0.0.1:1080"
+              EXTRA="--js-runtimes deno --remote-components ejs:github"
               ;;
-
-            "youtube_playlist")
-              echo "📺 YouTube Playlist Download Mode"
-              
-              case "$QUALITY" in
-                "audio")
-                  FORMAT="bestaudio/bestaudio*"
-                  COMMON_FLAGS="--extract-audio --audio-format mp3 --audio-quality 0"
-                  ;;
-                "best")
-                  FORMAT="bestvideo+bestaudio/bestvideo*+bestaudio*/best"
-                  COMMON_FLAGS="--merge-output-format mp4"
-                  ;;
-                *)
-                  FORMAT="bestvideo[height<=${QUALITY}]+bestaudio/bestvideo[height<=${QUALITY}]*+bestaudio*"
-                  COMMON_FLAGS="--merge-output-format mp4"
-                  ;;
-              esac
-
-              echo "📥 Starting playlist download: $INPUT_TEXT"
-              yt-dlp \
-                --proxy "socks5://127.0.0.1:1080" \
-                --format "$FORMAT" \
-                $COMMON_FLAGS \
-                --output "downloads/%(playlist_title)s/%(playlist_index)s - %(title)s.%(ext)s" \
-                --extractor-args "youtube:player_client=web" \
-                --js-runtimes deno \
-                --remote-components ejs:github \
-                --progress \
-                --yes-playlist \
-                "$INPUT_TEXT"
-              echo "✅ Playlist download completed"
+            youtube_music_search)
+              FOLDER="youtube_searches"
+              QUERY="ytsearch50:$TEXT music"
+              CLIENT="mweb"
+              PROXY="--proxy socks5://127.0.0.1:1080"
+              EXTRA=""
               ;;
-
-            "direct_download")
-              echo "📥 Direct Download Mode"
-              
-              for URL in $INPUT_TEXT; do
-                FILENAME=$(basename "$URL" | sed 's/%20/ /g' | sed 's/%2F/-/g' | sed 's/[?#].*//' | sed 's/[<>:"|?*]/_/g')
-                echo "📥 Downloading: $FILENAME"
-                
-                aria2c \
-                  --split=4 \
-                  --max-connection-per-server=4 \
-                  --min-split-size=20M \
-                  --max-tries=5 \
-                  --retry-wait=3 \
-                  --timeout=60 \
-                  --connect-timeout=30 \
-                  --check-certificate=false \
-                  --allow-overwrite=true \
-                  --dir="downloads" \
-                  --out="$FILENAME" \
-                  --summary-interval=1 \
-                  "$URL" || \
-                curl -L -f -# \
-                  --retry 3 \
-                  --retry-delay 5 \
-                  --connect-timeout 30 \
-                  --max-time 3600 \
-                  -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-                  -o "downloads/$FILENAME" \
-                  "$URL"
-                echo "✅ Downloaded: $FILENAME"
-              done
+            soundcloud_search)
+              FOLDER="soundcloud_searches"
+              QUERY="scsearch50:$TEXT"
+              CLIENT=""
+              PROXY=""
+              EXTRA=""
               ;;
-
-            "youtube_search")
-              echo "🔍 YouTube Search Mode"
-              
-              SEARCH_TERM="$INPUT_TEXT"
-              SAFE_SEARCH_TERM=$(echo "$SEARCH_TERM" | sed 's/[^a-zA-Z0-9 ]/_/g' | sed 's/ /_/g')
-              
-              mkdir -p "results"
-              echo "🔍 Searching for: $SEARCH_TERM"
-              
-              # Get search results and save as JSONL
-              yt-dlp \
-                --proxy "socks5://127.0.0.1:1080" \
-                --dump-json \
-                --flat-playlist \
-                --playlist-end 50 \
-                --extractor-args "youtube:player_client=web" \
-                "ytsearch50:$SEARCH_TERM" > /tmp/raw_search.jsonl
-              
-              # Create markdown table
-              {
-                echo "# YouTube Search Results for: $SEARCH_TERM"
-                echo ""
-                echo "| # | Title | Duration | Views | Channel | URL |"
-                echo "|---|-------|----------|-------|---------|-----|"
-                
-                # Process each line (each JSON object)
-                INDEX=1
-                while IFS= read -r line; do
-                  if [ -n "$line" ] && [ "$line" != "null" ]; then
-                    TITLE=$(echo "$line" | jq -r '.title // "N/A"' | sed 's/|/-/g')
-                    DURATION=$(echo "$line" | jq -r '.duration_string // "N/A"')
-                    VIEWS=$(echo "$line" | jq -r '.view_count // "N/A"')
-                    UPLOADER=$(echo "$line" | jq -r '.uploader // "N/A"' | sed 's/|/-/g')
-                    VIDEO_ID=$(echo "$line" | jq -r '.id // ""')
-                    
-                    if [ -n "$VIDEO_ID" ] && [ "$VIDEO_ID" != "null" ]; then
-                      URL_LINK="https://www.youtube.com/watch?v=$VIDEO_ID"
-                      echo "| $INDEX | $TITLE | $DURATION | $VIEWS | $UPLOADER | [Watch]($URL_LINK) |"
-                      INDEX=$((INDEX + 1))
-                    fi
-                  fi
-                done < /tmp/raw_search.jsonl
-              } > "results/${SAFE_SEARCH_TERM}_youtube_search.md"
-              echo "✅ Search completed: $((INDEX-1)) results saved"
-              ;;
-
-            "youtube_music_search")
-              echo "🎵 YouTube Music Search Mode"
-              
-              SEARCH_TERM="$INPUT_TEXT"
-              SAFE_SEARCH_TERM=$(echo "$SEARCH_TERM" | sed 's/[^a-zA-Z0-9 ]/_/g' | sed 's/ /_/g')
-              
-              mkdir -p "results"
-              echo "🔍 Searching music for: $SEARCH_TERM"
-              
-              # Get music search results and save as JSONL
-              yt-dlp \
-                --proxy "socks5://127.0.0.1:1080" \
-                --dump-json \
-                --flat-playlist \
-                --playlist-end 50 \
-                --extractor-args "youtube:player_client=mweb" \
-                "ytsearch50:$SEARCH_TERM music" > /tmp/raw_music_search.jsonl
-              
-              # Create markdown table
-              {
-                echo "# YouTube Music Search Results for: $SEARCH_TERM"
-                echo ""
-                echo "| # | Title | Duration | Views | Channel | URL |"
-                echo "|---|-------|----------|-------|---------|-----|"
-                
-                # Process each line (each JSON object)
-                INDEX=1
-                while IFS= read -r line; do
-                  if [ -n "$line" ] && [ "$line" != "null" ]; then
-                    TITLE=$(echo "$line" | jq -r '.title // "N/A"' | sed 's/|/-/g')
-                    DURATION=$(echo "$line" | jq -r '.duration_string // "N/A"')
-                    VIEWS=$(echo "$line" | jq -r '.view_count // "N/A"')
-                    UPLOADER=$(echo "$line" | jq -r '.uploader // "N/A"' | sed 's/|/-/g')
-                    VIDEO_ID=$(echo "$line" | jq -r '.id // ""')
-                    
-                    if [ -n "$VIDEO_ID" ] && [ "$VIDEO_ID" != "null" ]; then
-                      URL_LINK="https://www.youtube.com/watch?v=$VIDEO_ID"
-                      echo "| $INDEX | $TITLE | $DURATION | $VIEWS | $UPLOADER | [Listen]($URL_LINK) |"
-                      INDEX=$((INDEX + 1))
-                    fi
-                  fi
-                done < /tmp/raw_music_search.jsonl
-              } > "results/${SAFE_SEARCH_TERM}_music_search.md"
-              echo "✅ Music search completed: $((INDEX-1)) results saved"
-              ;;
-
           esac
+          mkdir -p "$FOLDER"
+          yt-dlp --dump-json --flat-playlist --playlist-end 50 \
+            $PROXY \
+            --extractor-args "youtube:player_client=$CLIENT" \
+            $EXTRA \
+            "$QUERY" > /tmp/raw.jsonl 2>/dev/null
 
-      - name: Stop WARP Container
-        if: always()
+          {
+            echo "# Search: $TEXT"
+            echo
+            echo "| # | Title | Duration | Views | Channel | URL |"
+            echo "|---|-------|----------|-------|---------|-----|"
+            idx=1
+            while IFS= read -r line; do
+              title=$(echo "$line" | jq -r '.title // "N/A"' | sed 's/|/-/g')
+              dur=$(echo "$line" | jq -r '.duration_string // "N/A"')
+              views=$(echo "$line" | jq -r '.view_count // "N/A"')
+              uploader=$(echo "$line" | jq -r '.uploader // "N/A"' | sed 's/|/-/g')
+              id=$(echo "$line" | jq -r '.id // ""')
+              if [ -n "$id" ] && [ "$id" != "null" ]; then
+                url_link="https://www.youtube.com/watch?v=$id"
+                [ "$METHOD" = "soundcloud_search" ] && url_link="https://soundcloud.com/$uploader/$id"
+                echo "| $idx | $title | $dur | $views | $uploader | [Link]($url_link) |"
+                idx=$((idx+1))
+              fi
+            done < /tmp/raw.jsonl
+          } > "$FOLDER/${SAFE}.md"
+
+          echo "Search completed: $((idx-1)) results -> $FOLDER/${SAFE}.md"
+
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add youtube_searches/ soundcloud_searches/ 2>/dev/null || true
+          git commit -m "Search: ${{ github.event.inputs.method }}" || echo "Nothing to commit"
+          git push
+
+      - if: always()
         run: |
           docker stop warp || true
           docker rm warp || true
-
-      - name: Commit & Push Results
-        run: |
-          git add downloads/ results/ 2>/dev/null || true
-          
-          if ! git diff --cached --quiet 2>/dev/null; then
-            case "${{ github.event.inputs.method }}" in
-              "youtube_download")
-                git commit -m "🎥 YouTube download completed"
-                ;;
-              "youtube_playlist")
-                git commit -m "📺 YouTube playlist download completed"
-                ;;
-              "direct_download")
-                git commit -m "📥 Direct download completed"
-                ;;
-              "youtube_search")
-                git commit -m "🔍 YouTube search completed"
-                ;;
-              "youtube_music_search")
-                git commit -m "🎵 YouTube Music search completed"
-                ;;
-            esac
-            
-            for i in {1..5}; do
-              if timeout 300 git push origin HEAD:"${GITHUB_REF_NAME}"; then
-                echo "✅ Push successful!"
-                break
-              else
-                echo "❌ Push failed, retry $i/5..."
-                sleep 10
-              fi
-            done
-          else
-            echo "ℹ️ No changes to commit"
-          fi

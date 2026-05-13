@@ -1,18 +1,19 @@
-name: "git-get"
+name: search
 
 on:
   workflow_dispatch:
     inputs:
-      method:
-        description: "Search platform"
+      platform:
+        description: 'Platform'
         required: true
         type: choice
         options:
-          - youtube_search
-          - youtube_music_search
-          - soundcloud_search
-      search_text:
-        description: "Search term"
+          - youtube
+          - youtube_music
+          - soundcloud
+          - pornhub
+      query:
+        description: 'Search Query'
         required: true
         type: string
 
@@ -22,97 +23,49 @@ permissions:
 jobs:
   search:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - if: contains(github.event.inputs.method, 'youtube')
+      - name: Setup
         run: |
-          docker network create warp-net || true
-          docker run -d --name warp --restart=always --network warp-net -p 1080:1080 \
-            --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 \
-            --sysctl net.ipv4.conf.all.src_valid_mark=1 -v warp-data:/var/lib/cloudflare-warp \
-            caomingjun/warp
-          sleep 15
+          sudo apt-get install -y python3-pip jq
+          pip3 install --quiet yt-dlp
 
-      - run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y python3-pip curl jq
-          pip3 install --upgrade yt-dlp
-          if [[ "${{ github.event.inputs.method }}" == youtube* ]]; then
-            curl -fsSL https://deno.land/install.sh | sh
-            echo "$HOME/.deno/bin" >> $GITHUB_PATH
-          fi
-
-      - shell: bash
-        env:
-          METHOD: ${{ github.event.inputs.method }}
-          TEXT: ${{ github.event.inputs.search_text }}
+      - name: Search
         run: |
-          SAFE=$(echo "$TEXT" | sed 's/[^a-zA-Z0-9 ]/_/g' | sed 's/ /_/g')
-          case "$METHOD" in
-            youtube_search)
-              FOLDER="youtube_searches"
-              QUERY="ytsearch50:$TEXT"
-              CLIENT="web"
-              PROXY="--proxy socks5://127.0.0.1:1080"
-              EXTRA="--js-runtimes deno --remote-components ejs:github"
+          mkdir -p downloads/search
+          cd downloads/search
+
+          case "${{ github.event.inputs.platform }}" in
+            "youtube")
+              yt-dlp --flat-playlist --dump-json "ytsearch30:${{ github.event.inputs.query }}" > results.jsonl
+              jq -r '"# YouTube Search: ${{ github.event.inputs.query }}\n\n| # | Title | Duration | Channel | URL |\n|---|---|---|---|---|", 
+              (.[0:25] | .[] | "| \(.index // 0) | \(.title) | \(.duration_string // \"-\") | \(.uploader // \"-\") | [Watch](https://youtube.com/watch?v=\(.id)) |")' results.jsonl > "youtube_${{ github.event.inputs.query | replace(" ", "_") }}.md"
               ;;
-            youtube_music_search)
-              FOLDER="youtube_searches"
-              QUERY="ytsearch50:$TEXT music"
-              CLIENT="mweb"
-              PROXY="--proxy socks5://127.0.0.1:1080"
-              EXTRA=""
+            "youtube_music")
+              yt-dlp --flat-playlist --dump-json "ytsearch30:${{ github.event.inputs.query }} music" > results.jsonl
+              jq -r '"# YouTube Music Search: ${{ github.event.inputs.query }}\n\n| # | Title | Duration | Channel | URL |\n|---|---|---|---|---|", 
+              (.[0:25] | .[] | "| \(.index // 0) | \(.title) | \(.duration_string // \"-\") | \(.uploader // \"-\") | [Listen](https://youtube.com/watch?v=\(.id)) |")' results.jsonl > "music_${{ github.event.inputs.query | replace(" ", "_") }}.md"
               ;;
-            soundcloud_search)
-              FOLDER="soundcloud_searches"
-              QUERY="scsearch50:$TEXT"
-              CLIENT=""
-              PROXY=""
-              EXTRA=""
+            "soundcloud")
+              yt-dlp --flat-playlist --dump-json "soundcloudsearch15:${{ github.event.inputs.query }}" > results.jsonl
+              jq -r '"# SoundCloud Search: ${{ github.event.inputs.query }}\n\n| # | Title | Duration | User | URL |\n|---|---|---|---|---|", 
+              (.[0:20] | .[] | "| \(.index // 0) | \(.title) | \(.duration_string // \"-\") | \(.uploader // \"-\") | [Link](\(.url)) |")' results.jsonl > "soundcloud_${{ github.event.inputs.query | replace(" ", "_") }}.md"
+              ;;
+            "pornhub")
+              yt-dlp --flat-playlist --dump-json "pornhubsearch15:${{ github.event.inputs.query }}" > results.jsonl 2>/dev/null || true
+              jq -r '"# Pornhub Search: ${{ github.event.inputs.query }}\n\n| # | Title | Duration | URL |\n|---|---|---|---|", 
+              (.[0:20] | .[] | "| \(.index // 0) | \(.title) | \(.duration_string // \"-\") | [Link](\(.url)) |")' results.jsonl > "pornhub_${{ github.event.inputs.query | replace(" ", "_") }}.md"
               ;;
           esac
-          mkdir -p "$FOLDER"
-          yt-dlp --dump-json --flat-playlist --playlist-end 50 \
-            $PROXY \
-            --extractor-args "youtube:player_client=$CLIENT" \
-            $EXTRA \
-            "$QUERY" > /tmp/raw.jsonl 2>/dev/null
 
-          {
-            echo "# Search: $TEXT"
-            echo
-            echo "| # | Title | Duration | Views | Channel | URL |"
-            echo "|---|-------|----------|-------|---------|-----|"
-            idx=1
-            while IFS= read -r line; do
-              title=$(echo "$line" | jq -r '.title // "N/A"' | sed 's/|/-/g')
-              dur=$(echo "$line" | jq -r '.duration_string // "N/A"')
-              views=$(echo "$line" | jq -r '.view_count // "N/A"')
-              uploader=$(echo "$line" | jq -r '.uploader // "N/A"' | sed 's/|/-/g')
-              id=$(echo "$line" | jq -r '.id // ""')
-              if [ -n "$id" ] && [ "$id" != "null" ]; then
-                url_link="https://www.youtube.com/watch?v=$id"
-                [ "$METHOD" = "soundcloud_search" ] && url_link="https://soundcloud.com/$uploader/$id"
-                echo "| $idx | $title | $dur | $views | $uploader | [Link]($url_link) |"
-                idx=$((idx+1))
-              fi
-            done < /tmp/raw.jsonl
-          } > "$FOLDER/${SAFE}.md"
-
-          echo "Search completed: $((idx-1)) results -> $FOLDER/${SAFE}.md"
-
-      - run: |
+      - name: Commit & Push
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add youtube_searches/ soundcloud_searches/ 2>/dev/null || true
-          git commit -m "Search: ${{ github.event.inputs.method }}" || echo "Nothing to commit"
+          git add downloads/search/
+          git commit -m "Search completed: ${{ github.event.inputs.platform }}" || echo "No changes"
           git push
-
-      - if: always()
-        run: |
-          docker stop warp || true
-          docker rm warp || true

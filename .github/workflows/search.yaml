@@ -40,7 +40,7 @@ jobs:
         run: |
           mkdir -p search
           python3 -c '
-            import subprocess, json, time, sys
+          import subprocess, json, time, sys
             query = """'"${{ env.QUERY }}"'"""
             platform = """'"${{ env.PLATFORM }}"'"""
             ts = int(time.time())

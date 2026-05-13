@@ -1,0 +1,51 @@
+name: direct
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Direct Link'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install
+        run: sudo apt-get install -y aria2 p7zip-full
+
+      - name: Download
+        run: |
+          mkdir -p downloads/direct
+          cd downloads/direct
+          FILENAME=$(basename "${{ github.event.inputs.url }}" | cut -d'?' -f1 | sed 's/[^a-zA-Z0-9._() -]/_/g')
+          aria2c -x 8 -s 8 --check-certificate=false -o "$FILENAME" "${{ github.event.inputs.url }}"
+          echo "Downloaded: $FILENAME"
+
+      - name: Split
+        run: |
+          cd downloads/direct
+          for file in *; do
+            [ -f "$file" ] || continue
+            if [ $(stat -c%s "$file") -gt $((95*1024*1024)) ]; then
+              7z a -v95m -mx=3 "${file%.*}.7z" "$file" && rm "$file"
+            fi
+          done
+
+      - name: Commit & Push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add downloads/direct/
+          git commit -m "Direct download completed" || echo "No changes"
+          git push

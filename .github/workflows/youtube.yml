@@ -1,0 +1,100 @@
+name: youtube
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Mode'
+        required: true
+        type: choice
+        options:
+          - video
+          - music
+          - playlist
+      url:
+        description: 'YouTube URL / Search Term'
+        required: true
+        type: string
+      quality:
+        description: 'Quality'
+        required: true
+        type: choice
+        options:
+          - best
+          - 1080
+          - 720
+          - 480
+          - audio
+
+permissions:
+  contents: write
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y ffmpeg aria2 curl jq
+          curl -fsSL https://deno.land/install.sh | sh
+          export DENO_INSTALL="$HOME/.deno"
+          export PATH="$DENO_INSTALL/bin:$PATH"
+          echo "$DENO_INSTALL/bin" >> $GITHUB_PATH
+          pip3 install --quiet yt-dlp
+
+      - name: Start WARP
+        run: |
+          docker network create warp-net || true
+          docker run -d --name warp --restart=always --network warp-net -p 1080:1080 --cap-add NET_ADMIN \
+            --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv4.conf.all.src_valid_mark=1 \
+            -v warp-data:/var/lib/cloudflare-warp caomingjun/warp
+          sleep 12
+
+      - name: Download
+        run: |
+          mkdir -p downloads/youtube
+          cd downloads/youtube
+
+          case "${{ github.event.inputs.mode }}" in
+            "video")
+              yt-dlp --proxy "socks5://127.0.0.1:1080" --format "bestvideo[height<=${{ github.event.inputs.quality }}]+bestaudio/best" \
+                --merge-output-format mp4 --no-playlist -o "%(title)s [%(id)s].%(ext)s" "${{ github.event.inputs.url }}"
+              ;;
+            "music")
+              yt-dlp --proxy "socks5://127.0.0.1:1080" -x --audio-format mp3 --audio-quality 0 \
+                --no-playlist -o "%(title)s [%(id)s].%(ext)s" "${{ github.event.inputs.url }}"
+              ;;
+            "playlist")
+              yt-dlp --proxy "socks5://127.0.0.1:1080" --format "bestvideo[height<=720]+bestaudio/best" \
+                --merge-output-format mp4 --yes-playlist -o "%(playlist_index)s - %(title)s [%(id)s].%(ext)s" "${{ github.event.inputs.url }}"
+              ;;
+          esac
+
+          echo "Downloaded files:"
+          ls -lh
+
+      - name: Split Files
+        run: |
+          cd downloads/youtube
+          for file in *; do
+            [ -f "$file" ] || continue
+            if [ $(stat -c%s "$file") -gt $((95*1024*1024)) ]; then
+              echo "Splitting: $file"
+              7z a -v95m -mx=2 "${file%.*}.7z" "$file"
+              rm "$file"
+            fi
+          done
+
+      - name: Commit & Push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add downloads/youtube/
+          git commit -m "YouTube: ${{ github.event.inputs.mode }} downloaded" || echo "No changes"
+          git push

@@ -1,0 +1,68 @@
+name: soundcloud
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Mode'
+        required: true
+        type: choice
+        options:
+          - download
+          - search
+      url:
+        description: 'SoundCloud URL or Search Term'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y ffmpeg python3-pip
+          pip3 install --quiet yt-dlp
+
+      - name: Process
+        run: |
+          mkdir -p downloads/soundcloud
+          cd downloads/soundcloud
+
+          if [[ "${{ github.event.inputs.mode }}" == "download" ]]; then
+            yt-dlp -x --audio-format mp3 --audio-quality 0 -o "%(title)s [%(id)s].%(ext)s" "${{ github.event.inputs.url }}"
+          else
+            yt-dlp --flat-playlist --dump-json "soundcloudsearch10:${{ github.event.inputs.url }}" | jq -r '
+              "# SoundCloud Search: ${{ github.event.inputs.url }}\n",
+              "| # | Title | Duration | User | URL |",
+              "|---|-------|----------|------|-----|",
+              (.[0:30] | .[] | "| \(.index // 0) | \(.title) | \(.duration_string // \"-\") | \(.uploader // \"-\") | [Link](\(.url)) |")
+            ' > "search_${{ github.event.inputs.url | replace(" ", "_") }}.md"
+          fi
+
+      - name: Split Files
+        run: |
+          cd downloads/soundcloud
+          for file in *.mp3 *.m4a; do
+            [ -f "$file" ] || continue
+            if [ $(stat -c%s "$file") -gt $((95*1024*1024)) ]; then
+              7z a -v95m -mx=2 "${file%.*}.7z" "$file" && rm "$file"
+            fi
+          done
+
+      - name: Commit & Push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add downloads/soundcloud/
+          git commit -m "SoundCloud: ${{ github.event.inputs.mode }} completed" || echo "No changes"
+          git push

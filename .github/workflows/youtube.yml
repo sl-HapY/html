@@ -1,93 +1,118 @@
-name: youtube
+name: git-get-youtube
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Mode'
+        description: 'Mode (video/playlist/music)'
         required: true
         type: choice
         options:
           - video
-          - music
           - playlist
-      url:
-        description: 'YouTube URL / Search Term'
+          - music
+      input:
+        description: 'URL or Search Term'
         required: true
         type: string
       quality:
         description: 'Quality'
-        required: true
+        required: false
+        default: 'best'
         type: choice
         options:
           - best
           - 1080
           - 720
-          - 480
           - audio
 
 permissions:
   contents: write
 
 jobs:
-  download:
+  youtube:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Setup
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y ffmpeg aria2 curl jq
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-pip ffmpeg aria2 curl jq bc rar
           curl -fsSL https://deno.land/install.sh | sh
           export DENO_INSTALL="$HOME/.deno"
           export PATH="$DENO_INSTALL/bin:$PATH"
           echo "$DENO_INSTALL/bin" >> $GITHUB_PATH
-          pip3 install --quiet yt-dlp
+          pip3 install --upgrade yt-dlp
 
       - name: Start WARP
         run: |
           docker network create warp-net || true
-          docker run -d --name warp --restart=always --network warp-net -p 1080:1080 --cap-add NET_ADMIN \
-            --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv4.conf.all.src_valid_mark=1 \
+          docker run -d --name warp --restart=always --network warp-net -p 1080:1080 \
+            --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 \
+            --sysctl net.ipv4.conf.all.src_valid_mark=1 \
             -v warp-data:/var/lib/cloudflare-warp caomingjun/warp
           sleep 12
 
-      - name: Download
+      - name: Process
+        env:
+          MODE: ${{ inputs.mode }}
+          INPUT: ${{ inputs.input }}
+          QUALITY: ${{ inputs.quality }}
         run: |
-          mkdir -p downloads/youtube
-          cd downloads/youtube
-
-          case "${{ github.event.inputs.mode }}" in
-            "video")
-              yt-dlp --proxy "socks5://127.0.0.1:1080" --format "bestvideo[height<=${{ github.event.inputs.quality }}]+bestaudio/best" \
-                --merge-output-format mp4 --no-playlist -o "%(title)s [%(id)s].%(ext)s" "${{ github.event.inputs.url }}"
-              ;;
-            "music")
-              yt-dlp --proxy "socks5://127.0.0.1:1080" -x --audio-format mp3 --audio-quality 0 \
-                --no-playlist -o "%(title)s [%(id)s].%(ext)s" "${{ github.event.inputs.url }}"
+          mkdir -p youtube
+          case "$MODE" in
+            "video"|"music")
+              if [[ "$MODE" == "music" ]]; then
+                EXTRA="--extract-audio --audio-format mp3 --audio-quality 0"
+                FORMAT="bestaudio/best"
+              else
+                case "$QUALITY" in
+                  "audio") FORMAT="bestaudio/best" ; EXTRA="--extract-audio --audio-format mp3 --audio-quality 0" ;;
+                  "best") FORMAT="bestvideo+bestaudio/best" ; EXTRA="--merge-output-format mp4" ;;
+                  *) FORMAT="bestvideo[height<=${QUALITY}]+bestaudio/best" ; EXTRA="--merge-output-format mp4" ;;
+                esac
+              fi
+              yt-dlp --proxy "socks5://127.0.0.1:1080" --format "$FORMAT" $EXTRA \
+                --output "youtube/%(title)s.%(ext)s" \
+                --extractor-args "youtube:player_client=web" \
+                --js-runtimes deno --remote-components ejs:github \
+                "$INPUT"
               ;;
             "playlist")
-              yt-dlp --proxy "socks5://127.0.0.1:1080" --format "bestvideo[height<=720]+bestaudio/best" \
-                --merge-output-format mp4 --yes-playlist -o "%(playlist_index)s - %(title)s [%(id)s].%(ext)s" "${{ github.event.inputs.url }}"
+              if [[ "$QUALITY" == "audio" ]]; then
+                EXTRA="--extract-audio --audio-format mp3 --audio-quality 0"
+                FORMAT="bestaudio/best"
+              else
+                FORMAT="bestvideo[height<=${QUALITY}]+bestaudio/best"
+                EXTRA="--merge-output-format mp4"
+              fi
+              yt-dlp --proxy "socks5://127.0.0.1:1080" --format "$FORMAT" $EXTRA \
+                --output "youtube/%(playlist_title)s/%(playlist_index)s - %(title)s.%(ext)s" \
+                --yes-playlist --extractor-args "youtube:player_client=web" \
+                --js-runtimes deno --remote-components ejs:github \
+                "$INPUT"
               ;;
           esac
 
-          echo "Downloaded files:"
-          ls -lh
+          echo "Downloaded to youtube/"
 
-      - name: Split Files
+      - name: Split files > 95MB
         run: |
-          cd downloads/youtube
-          for file in *; do
-            [ -f "$file" ] || continue
-            if [ $(stat -c%s "$file") -gt $((95*1024*1024)) ]; then
-              echo "Splitting: $file"
-              7z a -v95m -mx=2 "${file%.*}.7z" "$file"
-              rm "$file"
+          cd youtube
+          find . -type f \( -name "*.mp4" -o -name "*.mp3" \) | while read file; do
+            size=$(stat -c%s "$file")
+            if [ $size -gt 99614720 ]; then
+              dir=$(dirname "$file")
+              base=$(basename "$file")
+              cd "$dir"
+              rar a -v90m -m5 -ep1 "${base%.*}.rar" "$base"
+              rm "$base"
+              cd - > /dev/null
             fi
           done
 
@@ -95,6 +120,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/youtube/
-          git commit -m "YouTube: ${{ github.event.inputs.mode }} downloaded" || echo "No changes"
+          git add youtube/
+          git commit -m "git-get: youtube" || echo "No changes"
           git push

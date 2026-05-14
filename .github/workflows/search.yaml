@@ -31,7 +31,7 @@ jobs:
       - name: Setup
         run: |
           sudo apt-get update -qq && sudo apt-get install -y python3-pip
-          pip3 install yt-dlp
+          pip3 install --upgrade yt-dlp
 
       - name: Search
         env:
@@ -39,38 +39,42 @@ jobs:
           QUERY: ${{ inputs.query }}
         run: |
           mkdir -p search
-          python3 -c '
-          import subprocess, json, time, sys
-            query = """'"${{ env.QUERY }}"'"""
-            platform = """'"${{ env.PLATFORM }}"'"""
-            ts = int(time.time())
-            outfile = f"search/{platform}_{ts}.md"
-            
-            if platform == "youtube":
-                cmd = ["yt-dlp", "--flat-playlist", "-j", f"ytsearch50:{query}"]
-            elif platform == "youtube_music":
-                cmd = ["yt-dlp", "--flat-playlist", "-j", f"ytsearch50:{query} music", "--extractor-args", "youtube:player_client=mweb"]
-            elif platform == "soundcloud":
-                cmd = ["yt-dlp", "--flat-playlist", "-j", f"scsearch50:{query}"]
-            elif platform == "pornhub":
-                cmd = ["yt-dlp", "--flat-playlist", "-j", f"pornhubsearch:{query}"]
-            
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            entries = [json.loads(l) for l in res.stdout.strip().split("\n") if l.strip()]
-            
-            with open(outfile, "w", encoding="utf-8") as f:
-                f.write(f"# Search Results - {platform.replace(\"_\", \" \").title()}\n\n")
-                f.write(f"**Query:** {query}\n\n")
-                f.write("| # | Title | Uploader | Duration | Link |\n")
-                f.write("|---|-------|----------|----------|------|\n")
-                for i, e in enumerate(entries, 1):
-                    title = e.get("title", "N/A").replace("|", "\\|")
-                    uploader = e.get("uploader", "N/A").replace("|", "\\|")
-                    dur = e.get("duration_string") or str(e.get("duration", "N/A"))
-                    link = e.get("webpage_url") or e.get("url", "")
-                    f.write(f"| {i} | {title} | {uploader} | {dur} | [link]({link}) |\n")
-            print(f"Search completed: {len(entries)} results")
-            '
+          python3 - << 'EOF'
+import subprocess
+import json
+import time
+
+query = """${QUERY}"""
+platform = """${PLATFORM}"""
+ts = int(time.time())
+outfile = f"search/{platform}_{ts}.md"
+
+if platform == "youtube":
+    cmd = ["yt-dlp", "--flat-playlist", "-j", f"ytsearch50:{query}"]
+elif platform == "youtube_music":
+    cmd = ["yt-dlp", "--flat-playlist", "-j", f"ytsearch50:{query} music", "--extractor-args", "youtube:player_client=mweb"]
+elif platform == "soundcloud":
+    cmd = ["yt-dlp", "--flat-playlist", "-j", f"scsearch50:{query}"]
+elif platform == "pornhub":
+    cmd = ["yt-dlp", "--flat-playlist", "-j", f"pornhubsearch:{query}"]
+
+res = subprocess.run(cmd, capture_output=True, text=True)
+entries = [json.loads(l) for l in res.stdout.strip().split("\n") if l.strip()]
+
+with open(outfile, "w", encoding="utf-8") as f:
+    f.write(f"# Search Results - {platform.replace('_', ' ').title()}\n\n")
+    f.write(f"**Query:** {query}\n\n")
+    f.write("| # | Title | Uploader | Duration | Link |\n")
+    f.write("|---|-------|----------|----------|------|\n")
+    for i, e in enumerate(entries, 1):
+        title = e.get("title", "N/A").replace("|", "\\|")
+        uploader = e.get("uploader", "N/A").replace("|", "\\|")
+        dur = e.get("duration_string") or str(e.get("duration", "N/A"))
+        link = e.get("webpage_url") or e.get("url", "")
+        f.write(f"| {i} | {title} | {uploader} | {dur} | [link]({link}) |\n")
+
+print(f"Search completed: {len(entries)} results")
+EOF
       - name: Commit & Push
         run: |
           git config user.name "github-actions[bot]"

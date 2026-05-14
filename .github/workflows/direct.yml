@@ -1,10 +1,10 @@
-name: direct
+name: git-get-direct
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'Direct Link'
+        description: 'Direct Download URL'
         required: true
         type: string
 
@@ -12,33 +12,29 @@ permissions:
   contents: write
 
 jobs:
-  download:
+  direct:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
-
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install
-        run: sudo apt-get install -y aria2 p7zip-full
+      - name: Setup
+        run: sudo apt-get install -y aria2 rar
 
       - name: Download
         run: |
-          mkdir -p downloads/direct
-          cd downloads/direct
-          FILENAME=$(basename "${{ github.event.inputs.url }}" | cut -d'?' -f1 | sed 's/[^a-zA-Z0-9._() -]/_/g')
-          aria2c -x 8 -s 8 --check-certificate=false -o "$FILENAME" "${{ github.event.inputs.url }}"
-          echo "Downloaded: $FILENAME"
+          mkdir -p direct
+          FILENAME=$(basename "${{ inputs.url }}" | cut -d'?' -f1 | sed 's/[^a-zA-Z0-9._()-]/_/g')
+          aria2c --split=8 --max-connection-per-server=4 --min-split-size=20M \
+            --dir=direct --out="$FILENAME" "${{ inputs.url }}"
 
-      - name: Split
+      - name: Split > 95MB
         run: |
-          cd downloads/direct
-          for file in *; do
-            [ -f "$file" ] || continue
-            if [ $(stat -c%s "$file") -gt $((95*1024*1024)) ]; then
-              7z a -v95m -mx=3 "${file%.*}.7z" "$file" && rm "$file"
+          cd direct
+          find . -type f | while read f; do
+            if [ $(stat -c%s "$f") -gt 99614720 ]; then
+              rar a -v90m -m5 -ep1 "${f%.*}.rar" "$f" && rm "$f"
             fi
           done
 
@@ -46,6 +42,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/direct/
-          git commit -m "Direct download completed" || echo "No changes"
+          git add direct/
+          git commit -m "git-get: direct" || echo "No changes"
           git push
